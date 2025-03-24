@@ -199,36 +199,46 @@ public class ProductService {
         if (item == null) {
             return null;
         }
-    
+        
         ProductDto dto = new ProductDto();
         
         try {
-            // PRDLST_REPORT_NO: 품목제조번호
-            // PRDLST_NM: 제품명
-            // BSSH_NM: 업체명
-            String prdlstReportNo = getTextFromNode(item, "PRDLST_REPORT_NO");
-            String prdlstNm = getTextFromNode(item, "PRDLST_NM");
-            String bsshNm = getTextFromNode(item, "BSSH_NM");
+            // 필드명은 실제 API 응답의 필드명과 일치해야 함
+            String productName = getTextFromNode(item, "PRDUCT"); // 제품명
+            String companyName = getTextFromNode(item, "ENTRPS"); // 업체명
+            String reportNo = getTextFromNode(item, "STTEMNT_NO"); // 품목제조신고번호
             
-            // 제품 ID 생성
+            if (productName.isEmpty()) {
+                log.warn("제품명이 없는 항목 무시");
+                return null;
+            }
+            
+            // 제품 ID 생성 (신고번호 기반 또는 해시코드)
             Long prdId;
-            try {
-                prdId = Long.parseLong(prdlstReportNo.replaceAll("[^0-9]", ""));
-            } catch (NumberFormatException e) {
-                prdId = Math.abs((prdlstNm.hashCode() + System.currentTimeMillis()) % 1000000000L);
+            if (!reportNo.isEmpty()) {
+                // 신고번호에서 숫자만 추출
+                String numericPart = reportNo.replaceAll("[^0-9]", "");
+                if (!numericPart.isEmpty()) {
+                    prdId = Long.parseLong(numericPart);
+                } else {
+                    prdId = Math.abs((productName.hashCode() + System.currentTimeMillis()) % 1000000000L);
+                }
+            } else {
+                prdId = Math.abs((productName.hashCode() + System.currentTimeMillis()) % 1000000000L);
             }
             
             dto.setPrdId(prdId);
-            dto.setProductName(prdlstNm);
-            dto.setCompanyName(bsshNm);
-            dto.setRegistrationNo(prdlstReportNo);
+            dto.setProductName(productName);
+            dto.setCompanyName(companyName);
+            dto.setRegistrationNo(reportNo);
             
-            // 추가 정보
-            dto.setExpirationPeriod(getTextFromNode(item, "POG_DAYCNT"));
-            dto.setMainFunction(getTextFromNode(item, "PRIMARY_FNCLTY"));
-            dto.setIntakeHint(getTextFromNode(item, "NTK_MTHD"));
-            dto.setPreservation(getTextFromNode(item, "PRSRV_PD"));
-            dto.setBaseStandard(getTextFromNode(item, "BASE_STANDARD"));
+            // 추가 정보 매핑
+            dto.setExpirationPeriod(getTextFromNode(item, "DISTB_PD")); // 유통기한
+            dto.setMainFunction(getTextFromNode(item, "MAIN_FNCTN")); // 주요기능
+            dto.setIntakeHint(getTextFromNode(item, "INTAKE_HINT1")); // 섭취시 주의사항
+            dto.setPreservation(getTextFromNode(item, "PRSRV_PD")); // 보관방법
+            dto.setSrvUse(getTextFromNode(item, "SRV_USE")); // 섭취방법
+            dto.setBaseStandard(getTextFromNode(item, "BASE_STANDARD")); // 기준규격
             
             return dto;
         } catch (Exception e) {
