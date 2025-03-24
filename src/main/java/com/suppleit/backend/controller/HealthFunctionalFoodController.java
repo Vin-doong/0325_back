@@ -41,6 +41,10 @@ public class HealthFunctionalFoodController {
             List<HealthFunctionalFoodDto> results = healthFunctionalFoodService.searchHealthFunctionalFood(
                     keyword, pageNo, numOfRows);
             
+            if (results.isEmpty()) {
+                return ResponseEntity.ok(ApiResponse.success("검색 결과가 없습니다.", results));
+            }
+            
             return ResponseEntity.ok(ApiResponse.success("검색 성공", results));
         } catch (Exception e) {
             log.error("건강기능식품 검색 처리 중 오류", e);
@@ -72,6 +76,29 @@ public class HealthFunctionalFoodController {
         } catch (Exception e) {
             log.error("건강기능식품 상세정보 조회 처리 중 오류", e);
             return ResponseEntity.badRequest().body(ApiResponse.error("조회 중 오류가 발생했습니다: " + e.getMessage()));
+        }
+    }
+    
+    /**
+     * 제품명으로 건강기능식품 검색하는 간단한 API
+     */
+    @GetMapping("/quick-search")
+    public ResponseEntity<?> quickSearch(@RequestParam String name) {
+        log.info("건강기능식품 빠른 검색 요청: 제품명={}", name);
+        
+        try {
+            if (name == null || name.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("제품명을 입력해주세요."));
+            }
+            
+            // 첫 페이지 5개 결과만 가져오기
+            List<HealthFunctionalFoodDto> results = healthFunctionalFoodService.searchHealthFunctionalFood(
+                    name, 1, 5);
+            
+            return ResponseEntity.ok(ApiResponse.success("검색 성공", results));
+        } catch (Exception e) {
+            log.error("빠른 검색 처리 중 오류", e);
+            return ResponseEntity.badRequest().body(ApiResponse.error("검색 중 오류가 발생했습니다: " + e.getMessage()));
         }
     }
 }

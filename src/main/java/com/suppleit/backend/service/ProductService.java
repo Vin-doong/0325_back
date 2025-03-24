@@ -19,6 +19,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import jakarta.annotation.PostConstruct;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -142,17 +143,21 @@ public class ProductService {
         try {
             // 한글 인코딩
             String encodedKeyword = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
+
+            log.debug("API 키: {}", apiKey);
+            log.debug("인코딩된 키워드: {}", encodedKeyword);
             
+            // API URL 구성
             URI uri = UriComponentsBuilder.fromUriString(apiUrl)
-                .path("/HtfsInfoService03")
-                .queryParam("serviceKey", apiKey)
+                .queryParam("serviceKey", apiKey)  // 인코딩된 키를 그대로 사용
                 .queryParam("Prduct", encodedKeyword)
                 .queryParam("pageNo", 1)
                 .queryParam("numOfRows", 10)
                 .queryParam("type", "json")
-                .build()
-                .encode()
+                .build(false)
                 .toUri();
+
+            log.debug("실제 요청 URL: {}", uri);
             
             HttpHeaders headers = new HttpHeaders();
             headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
@@ -163,17 +168,47 @@ public class ProductService {
             
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 JsonNode root = objectMapper.readTree(response.getBody());
+                
+                // 로그에 전체 응답 기록
+                log.debug("API 응답: {}", root.toString());
+                
+                // 응답 구조 확인 및 파싱
+                JsonNode header = root.path("header");
+                String resultCode = header.path("resultCode").asText();
+                
+                if (!"00".equals(resultCode)) {
+                    log.error("API 오류 응답: {}, {}", resultCode, header.path("resultMsg").asText());
+                    return results;
+                }
+                
                 JsonNode body = root.path("body");
+                int totalCount = body.path("totalCount").asInt();
+                log.info("검색 결과 총 건수: {}", totalCount);
+                
                 JsonNode items = body.path("items");
                 
-                if (items.isArray() && items.size() > 0) {
-                    for (JsonNode item : items) {
-                        ProductDto productDto = parseProductFromJson(item);
-                        if (productDto != null) {
-                            results.add(productDto);
+                if (items.isArray()) {
+                    for (JsonNode itemNode : items) {
+                        // items 배열 안에 item 객체가 있는 경우
+                        JsonNode item = itemNode.path("item");
+                        if (!item.isMissingNode()) {
+                            ProductDto productDto = parseProductFromJson(item);
+                            if (productDto != null) {
+                                results.add(productDto);
+                            }
+                        } else {
+                            // items 배열 자체가 item인 경우
+                            ProductDto productDto = parseProductFromJson(itemNode);
+                            if (productDto != null) {
+                                results.add(productDto);
+                            }
                         }
                     }
+                } else {
+                    log.warn("API 응답에 items 배열이 없습니다");
                 }
+                
+                log.info("API에서 가져온 제품 수: {}", results.size());
             } else {
                 log.warn("API 응답 오류 또는 응답 없음");
             }
@@ -200,33 +235,41 @@ public class ProductService {
             return null;
         }
         
-        ProductDto dto = new ProductDto();
-        
         try {
-            // 필드명은 실제 API 응답의 필드명과 일치해야 함
-            String productName = getTextFromNode(item, "PRDUCT"); // 제품명
-            String companyName = getTextFromNode(item, "ENTRPS"); // 업체명
-            String reportNo = getTextFromNode(item, "STTEMNT_NO"); // 품목제조신고번호
+            // 로그에 파싱할 항목 출력
+            log.debug("파싱할 항목: {}", item.toString());
             
+            String productName = getTextFromNode(item, "PRDUCT"); // 제품명
+            
+            // 제품명이 없으면 건너뛰기
             if (productName.isEmpty()) {
                 log.warn("제품명이 없는 항목 무시");
                 return null;
             }
             
-            // 제품 ID 생성 (신고번호 기반 또는 해시코드)
+            String companyName = getTextFromNode(item, "ENTRPS"); // 업체명
+            String reportNo = getTextFromNode(item, "STTEMNT_NO"); // 품목제조신고번호
+            
+            // 제품 ID 생성
             Long prdId;
             if (!reportNo.isEmpty()) {
                 // 신고번호에서 숫자만 추출
                 String numericPart = reportNo.replaceAll("[^0-9]", "");
                 if (!numericPart.isEmpty()) {
-                    prdId = Long.parseLong(numericPart);
+                    try {
+                        prdId = Long.parseLong(numericPart);
+                    } catch (NumberFormatException e) {
+                        // 숫자로 변환 실패 시 해시코드 사용
+                        prdId = (long) Math.abs(productName.hashCode() + System.currentTimeMillis() % 1000000000);
+                    }
                 } else {
-                    prdId = Math.abs((productName.hashCode() + System.currentTimeMillis()) % 1000000000L);
+                    prdId = (long) Math.abs(productName.hashCode() + System.currentTimeMillis() % 1000000000);
                 }
             } else {
-                prdId = Math.abs((productName.hashCode() + System.currentTimeMillis()) % 1000000000L);
+                prdId = (long) Math.abs(productName.hashCode() + System.currentTimeMillis() % 1000000000);
             }
             
+            ProductDto dto = new ProductDto();
             dto.setPrdId(prdId);
             dto.setProductName(productName);
             dto.setCompanyName(companyName);
@@ -240,6 +283,7 @@ public class ProductService {
             dto.setSrvUse(getTextFromNode(item, "SRV_USE")); // 섭취방법
             dto.setBaseStandard(getTextFromNode(item, "BASE_STANDARD")); // 기준규격
             
+            log.info("파싱된 제품: {}", productName);
             return dto;
         } catch (Exception e) {
             log.error("제품 데이터 파싱 중 오류: {}", e.getMessage(), e);
