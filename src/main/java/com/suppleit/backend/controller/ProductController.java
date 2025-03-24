@@ -1,4 +1,3 @@
-// src/main/java/com/suppleit/backend/controller/ProductController.java
 package com.suppleit.backend.controller;
 
 import com.suppleit.backend.dto.ApiResponse;
@@ -23,7 +22,16 @@ public class ProductController {
     public ResponseEntity<?> searchProducts(@RequestParam String keyword) {
         log.info("제품 검색 요청: {}", keyword);
         try {
+            if (keyword == null || keyword.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("검색어를 입력해주세요."));
+            }
+            
             List<ProductDto> products = productService.searchProducts(keyword);
+            
+            if (products.isEmpty()) {
+                return ResponseEntity.ok(ApiResponse.success("검색 결과가 없습니다.", products));
+            }
+            
             return ResponseEntity.ok(ApiResponse.success("검색 성공", products));
         } catch (Exception e) {
             log.error("제품 검색 중 오류: {}", e.getMessage(), e);

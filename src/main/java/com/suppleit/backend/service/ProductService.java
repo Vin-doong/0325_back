@@ -11,16 +11,21 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -38,75 +43,80 @@ public class ProductService {
     @Value("${api.health-functional-food.key}")
     private String apiKey;
 
-    // 외부 API를 통한 제품 검색
+    // 초기 데이터 확인 및 설정
+    @PostConstruct
+    public void initializeData() {
+        // 데이터베이스가 비어있는지 확인
+        long productCount = productMapper.getProductCount();
+        if (productCount == 0) {
+            log.info("제품 테이블이 비어있습니다. 기본 데이터 초기화 중...");
+            
+            try {
+                // 샘플 제품 추가
+                List<ProductDto> sampleProducts = getSampleProducts();
+                for (ProductDto product : sampleProducts) {
+                    Product entity = convertToEntity(product);
+                    productMapper.insertProduct(entity);
+                }
+                log.info("기본 데이터 초기화 완료: {}건", sampleProducts.size());
+            } catch (Exception e) {
+                log.error("기본 데이터 초기화 중 오류: {}", e.getMessage(), e);
+            }
+        } else {
+            log.info("제품 테이블에 {}건의 데이터가 존재합니다.", productCount);
+        }
+    }
+
+    // 외부 API와 DB를 함께 사용하는 통합 검색
     public List<ProductDto> searchProducts(String keyword) {
-        log.debug("제품 검색 시작: {}", keyword);
-        log.debug("API URL: {}", apiUrl);
-        log.debug("API Key: {}", apiKey);
-        
-        List<ProductDto> results = new ArrayList<>();
+        log.info("제품 검색 시작: {}", keyword);
         
         try {
-            // 한글 인코딩 추가
-            String encodedKeyword = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
+            // 먼저 데이터베이스 검색
+            List<ProductDto> dbResults = searchProductsFromDb(keyword);
             
-            URI uri = UriComponentsBuilder.fromUriString(apiUrl)
-                .queryParam("serviceKey", apiKey)
-                .queryParam("Prduct", encodedKeyword)
-                .queryParam("pageNo", 1)
-                .queryParam("numOfRows", 10)
-                .queryParam("type", "json")
-                .build()
-                .encode()
-                .toUri();
-            
-            log.debug("전체 API 요청 URL: {}", uri.toString());
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
-            HttpEntity<?> entity = new HttpEntity<>(headers);
-
-            ResponseEntity<String> response = restTemplate.exchange(uri, HttpMethod.GET, entity, String.class);
-            
-            log.debug("API 응답 상태 코드: {}", response.getStatusCode());
-            log.debug("API 응답 본문: {}", response.getBody());
-
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                JsonNode root = objectMapper.readTree(response.getBody());
-                
-                // 전체 응답 구조 로깅
-                log.debug("전체 응답 JSON 구조: {}", root.toString());
-                
-                JsonNode body = root.path("body");
-                JsonNode items = body.path("items");
-                
-                log.debug("items 노드 상태: {}", items);
-                log.debug("items 배열 크기: {}", items.size());
-
-                if (items.isArray() && items.size() > 0) {
-                    for (JsonNode item : items) {
-                        log.debug("개별 아이템: {}", item.toString());
-                        ProductDto productDto = parseProductFromJson(item);
-                        
-                        if (productDto != null) {
-                            saveProductToDb(productDto);
-                            results.add(productDto);
-                        }
-                    }
-                    log.info("API 검색 결과 {}건 반환", results.size());
-                } else {
-                    log.info("API 검색 결과 없음, DB 검색으로 전환");
-                    return searchProductsFromDb(keyword);
-                }
-            } else {
-                log.warn("API 응답 오류 또는 응답 없음");
-                return searchProductsFromDb(keyword);
+            // 데이터베이스 결과가 충분하면 반환
+            if (dbResults.size() >= 5) {
+                log.info("DB에서 충분한 검색 결과 발견: {}건", dbResults.size());
+                return dbResults;
             }
             
-            return results;
+            // DB 결과가 불충분하면 외부 API 검색 시도
+            log.info("DB 검색 결과 불충분 ({}건), 외부 API 검색 시도", dbResults.size());
+            try {
+                List<ProductDto> apiResults = searchProductsFromApi(keyword);
+                
+                // 결과 병합 (ID 기반 중복 제거)
+                Map<Long, ProductDto> combinedResults = new HashMap<>();
+                
+                // DB 결과 먼저 추가
+                for (ProductDto product : dbResults) {
+                    combinedResults.put(product.getPrdId(), product);
+                }
+                
+                // API 결과 추가 (중복 방지)
+                for (ProductDto product : apiResults) {
+                    if (!combinedResults.containsKey(product.getPrdId())) {
+                        combinedResults.put(product.getPrdId(), product);
+                        
+                        // DB에 새 제품 저장
+                        try {
+                            saveProductToDb(product);
+                        } catch (Exception e) {
+                            log.warn("제품 저장 중 오류: {}", e.getMessage());
+                        }
+                    }
+                }
+                
+                return new ArrayList<>(combinedResults.values());
+                
+            } catch (Exception apiError) {
+                log.warn("외부 API 검색 중 오류, DB 결과만 반환: {}", apiError.getMessage());
+                return dbResults;
+            }
         } catch (Exception e) {
-            log.error("제품 검색 중 오류: ", e);
-            return searchProductsFromDb(keyword);
+            log.error("제품 검색 중 오류: {}", e.getMessage(), e);
+            return new ArrayList<>();
         }
     }
 
@@ -124,6 +134,56 @@ public class ProductService {
         }
     }
 
+    // API에서 제품 검색
+    private List<ProductDto> searchProductsFromApi(String keyword) {
+        log.info("외부 API에서 제품 검색: {}", keyword);
+        List<ProductDto> results = new ArrayList<>();
+        
+        try {
+            // 한글 인코딩
+            String encodedKeyword = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
+            
+            URI uri = UriComponentsBuilder.fromUriString(apiUrl)
+                .path("/HtfsInfoService03")
+                .queryParam("serviceKey", apiKey)
+                .queryParam("Prduct", encodedKeyword)
+                .queryParam("pageNo", 1)
+                .queryParam("numOfRows", 10)
+                .queryParam("type", "json")
+                .build()
+                .encode()
+                .toUri();
+            
+            HttpHeaders headers = new HttpHeaders();
+            headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
+            HttpEntity<?> entity = new HttpEntity<>(headers);
+
+            log.debug("API 요청 URL: {}", uri);
+            ResponseEntity<String> response = restTemplate.exchange(uri, HttpMethod.GET, entity, String.class);
+            
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                JsonNode body = root.path("body");
+                JsonNode items = body.path("items");
+                
+                if (items.isArray() && items.size() > 0) {
+                    for (JsonNode item : items) {
+                        ProductDto productDto = parseProductFromJson(item);
+                        if (productDto != null) {
+                            results.add(productDto);
+                        }
+                    }
+                }
+            } else {
+                log.warn("API 응답 오류 또는 응답 없음");
+            }
+        } catch (Exception e) {
+            log.error("API 검색 중 오류: {}", e.getMessage(), e);
+        }
+        
+        return results;
+    }
+
     // 특정 제품 조회
     public ProductDto getProductById(Long productId) {
         log.info("제품 ID로 조회: {}", productId);
@@ -134,34 +194,27 @@ public class ProductService {
         return convertToDto(product);
     }
 
-    // JSON 응답에서 ProductDto 객체 생성
+    // JSON을 Product 객체로 파싱
     private ProductDto parseProductFromJson(JsonNode item) {
         if (item == null) {
-            log.warn("빈 JSON 노드입니다.");
             return null;
         }
     
         ProductDto dto = new ProductDto();
         
         try {
-            log.debug("개별 아이템 JSON 구조: {}", item.toString());
+            // PRDLST_REPORT_NO: 품목제조번호
+            // PRDLST_NM: 제품명
+            // BSSH_NM: 업체명
+            String prdlstReportNo = getTextFromNode(item, "PRDLST_REPORT_NO");
+            String prdlstNm = getTextFromNode(item, "PRDLST_NM");
+            String bsshNm = getTextFromNode(item, "BSSH_NM");
             
-            // 필드명 확인 및 로깅
-            log.debug("Available fields: {}", item.fieldNames());
-            
-            String prdlstReportNo = item.path("PRDLST_REPORT_NO").asText("");
-            String prdlstNm = item.path("PRDLST_NM").asText("");
-            String bsshNm = item.path("BSSH_NM").asText("");
-            
-            log.debug("추출된 데이터 - 제품번호: {}, 제품명: {}, 제조사: {}", 
-                      prdlstReportNo, prdlstNm, bsshNm);
             // 제품 ID 생성
             Long prdId;
             try {
-                // 등록번호가 숫자인 경우
                 prdId = Long.parseLong(prdlstReportNo.replaceAll("[^0-9]", ""));
             } catch (NumberFormatException e) {
-                // 등록번호가 숫자가 아니거나 비어있는 경우 해시 기반 임시 ID 생성
                 prdId = Math.abs((prdlstNm.hashCode() + System.currentTimeMillis()) % 1000000000L);
             }
             
@@ -170,29 +223,18 @@ public class ProductService {
             dto.setCompanyName(bsshNm);
             dto.setRegistrationNo(prdlstReportNo);
             
-            // 기타 필드들 (존재한다면)
-            if (item.has("POG_DAYCNT")) {
-                dto.setExpirationPeriod(item.path("POG_DAYCNT").asText(""));
-            }
-            if (item.has("PRIMARY_FNCLTY")) {
-                dto.setMainFunction(item.path("PRIMARY_FNCLTY").asText(""));
-            }
-            if (item.has("NTK_MTHD")) {
-                dto.setIntakeHint(item.path("NTK_MTHD").asText(""));
-            }
-            if (item.has("PRSRV_PD")) {
-                dto.setPreservation(item.path("PRSRV_PD").asText(""));
-            }
-            if (item.has("BASE_STANDARD")) {
-                dto.setBaseStandard(item.path("BASE_STANDARD").asText(""));
-            }
+            // 추가 정보
+            dto.setExpirationPeriod(getTextFromNode(item, "POG_DAYCNT"));
+            dto.setMainFunction(getTextFromNode(item, "PRIMARY_FNCLTY"));
+            dto.setIntakeHint(getTextFromNode(item, "NTK_MTHD"));
+            dto.setPreservation(getTextFromNode(item, "PRSRV_PD"));
+            dto.setBaseStandard(getTextFromNode(item, "BASE_STANDARD"));
+            
+            return dto;
         } catch (Exception e) {
             log.error("제품 데이터 파싱 중 오류: {}", e.getMessage(), e);
-            log.error("문제가 발생한 아이템: {}", item.toString());
             return null;
         }
-        
-        return dto;
     }
 
     // 노드에서 텍스트 안전하게 가져오기
@@ -200,12 +242,7 @@ public class ProductService {
         if (node == null || node.path(fieldName).isMissingNode()) {
             return "";
         }
-        return node.path(fieldName).asText("");
-    }
-
-    // 임시 ID 생성
-    private Long generateTempId(String key) {
-        return Math.abs((key.hashCode() + System.currentTimeMillis()) % 1000000000L);
+        return node.path(fieldName).asText("").trim();
     }
 
     // 제품 정보를 DB에 저장
@@ -213,27 +250,32 @@ public class ProductService {
         try {
             // ID가 0인 경우 처리
             if (productDto.getPrdId() == 0) {
-                log.warn("제품 ID가 0이므로 저장하지 않음: {}", productDto.getProductName());
-                return;
+                productDto.setPrdId(generateTempId(productDto.getProductName()));
             }
             
             // 이미 존재하는지 확인
             Product existingProduct = productMapper.getProductById(productDto.getPrdId());
             
             if (existingProduct == null) {
-                // 새로운 제품 저장
+                // 새 제품 저장
                 Product product = convertToEntity(productDto);
                 productMapper.insertProduct(product);
                 log.info("새 제품 DB에 저장: {}", productDto.getProductName());
             } else {
-                // 기존 제품 업데이트 - API에서 가져온 데이터로 갱신
+                // 기존 제품 갱신
                 Product product = convertToEntity(productDto);
                 productMapper.updateProduct(product);
                 log.info("기존 제품 정보 업데이트: {}", productDto.getProductName());
             }
         } catch (Exception e) {
             log.error("제품 저장 중 오류: {}", e.getMessage(), e);
+            throw e;
         }
+    }
+
+    // 임시 ID 생성
+    private Long generateTempId(String key) {
+        return Math.abs((key.hashCode() + System.currentTimeMillis()) % 1000000000L);
     }
 
     // Entity -> DTO 변환
@@ -266,5 +308,52 @@ public class ProductService {
         product.setIntakeHint(dto.getIntakeHint());
         product.setBaseStandard(dto.getBaseStandard());
         return product;
+    }
+    
+    // 샘플 데이터 생성
+    private List<ProductDto> getSampleProducts() {
+        List<ProductDto> products = new ArrayList<>();
+        
+        // 샘플 제품 1
+        ProductDto product1 = new ProductDto();
+        product1.setPrdId(1001L);
+        product1.setProductName("종합비타민");
+        product1.setCompanyName("건강약품");
+        product1.setMainFunction("면역력 강화, 피로회복");
+        products.add(product1);
+        
+        // 샘플 제품 2
+        ProductDto product2 = new ProductDto();
+        product2.setPrdId(1002L);
+        product2.setProductName("오메가3");
+        product2.setCompanyName("자연약품");
+        product2.setMainFunction("혈행개선, 혈중 중성지질 개선");
+        products.add(product2);
+        
+        // 샘플 제품 3
+        ProductDto product3 = new ProductDto();
+        product3.setPrdId(1003L);
+        product3.setProductName("루테인");
+        product3.setCompanyName("눈건강");
+        product3.setMainFunction("눈 건강, 시력보호");
+        products.add(product3);
+        
+        // 샘플 제품 4
+        ProductDto product4 = new ProductDto();
+        product4.setPrdId(1004L);
+        product4.setProductName("칼슘마그네슘");
+        product4.setCompanyName("뼈건강");
+        product4.setMainFunction("뼈 건강, 골다공증 예방");
+        products.add(product4);
+        
+        // 샘플 제품 5
+        ProductDto product5 = new ProductDto();
+        product5.setPrdId(1005L);
+        product5.setProductName("프로바이오틱스");
+        product5.setCompanyName("장건강");
+        product5.setMainFunction("장 건강, 면역력 증진");
+        products.add(product5);
+        
+        return products;
     }
 }

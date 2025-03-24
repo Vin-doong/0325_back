@@ -1,4 +1,3 @@
-// src/main/java/com/suppleit/backend/mapper/ProductMapper.java
 package com.suppleit.backend.mapper;
 
 import com.suppleit.backend.model.Product;
@@ -20,4 +19,7 @@ public interface ProductMapper {
     
     // 제품 정보 업데이트
     void updateProduct(Product product);
+    
+    // 제품 개수 조회 (추가)
+    long getProductCount();
 }

@@ -16,21 +16,30 @@
         <result property="baseStandard" column="base_standard"/>
     </resultMap>
 
+    <!-- 제품 개수 조회 (추가) -->
+    <select id="getProductCount" resultType="long">
+        SELECT COUNT(*) FROM Product
+    </select>
+
     <!-- 제품 ID로 조회 -->
     <select id="getProductById" resultMap="productResultMap">
         SELECT * FROM Product WHERE prd_id = #{prdId}
     </select>
     
-    <!-- 제품명으로 검색 -->
+    <!-- 제품명으로 검색 (최적화) -->
     <select id="searchProducts" resultMap="productResultMap">
         SELECT * FROM Product 
         WHERE product_name LIKE CONCAT('%', #{keyword}, '%')
         OR company_name LIKE CONCAT('%', #{keyword}, '%')
         OR main_function LIKE CONCAT('%', #{keyword}, '%')
         ORDER BY 
-            CASE WHEN product_name LIKE CONCAT(#{keyword}, '%') THEN 1
+            CASE 
+                WHEN product_name = #{keyword} THEN 0
+                WHEN product_name LIKE CONCAT(#{keyword}, '%') THEN 1
                 WHEN product_name LIKE CONCAT('%', #{keyword}, '%') THEN 2
-                ELSE 3
+                WHEN company_name LIKE CONCAT('%', #{keyword}, '%') THEN 3
+                WHEN main_function LIKE CONCAT('%', #{keyword}, '%') THEN 4
+                ELSE 5
             END,
             product_name
         LIMIT 20
@@ -47,6 +56,9 @@
             #{expirationPeriod}, #{srvUse}, #{mainFunction}, #{preservation}, 
             #{intakeHint}, #{baseStandard}
         )
+        ON DUPLICATE KEY UPDATE
+            product_name = #{productName},
+            company_name = #{companyName}
     </insert>
     
     <!-- 제품 정보 업데이트 -->
