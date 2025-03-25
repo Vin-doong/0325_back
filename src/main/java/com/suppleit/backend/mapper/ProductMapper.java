@@ -22,4 +22,7 @@ public interface ProductMapper {
     
     // 제품 개수 조회 (추가)
     long getProductCount();
+
+    Product getProductByRegistrationNo(@Param("registrationNo") String registrationNo);
+
 }

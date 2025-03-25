@@ -2,6 +2,7 @@ package com.suppleit.backend.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.suppleit.backend.dto.FavoriteDto;
 import com.suppleit.backend.dto.ProductDto;
 import com.suppleit.backend.mapper.ProductMapper;
 import com.suppleit.backend.model.Product;
@@ -235,54 +236,28 @@ public class ProductService {
         }
         
         try {
-            // 로그에 파싱할 항목 출력
-            log.debug("파싱할 항목: {}", item.toString());
-            
-            String productName = getTextFromNode(item, "PRDUCT"); // 제품명
-            
-            // 제품명이 없으면 건너뛰기
+            String productName = getTextFromNode(item, "PRDUCT");
             if (productName.isEmpty()) {
-                log.warn("제품명이 없는 항목 무시");
                 return null;
             }
             
-            String companyName = getTextFromNode(item, "ENTRPS"); // 업체명
-            String reportNo = getTextFromNode(item, "STTEMNT_NO"); // 품목제조신고번호
-            
-            // 제품 ID 생성
-            Long prdId;
-            if (!reportNo.isEmpty()) {
-                // 신고번호에서 숫자만 추출
-                String numericPart = reportNo.replaceAll("[^0-9]", "");
-                if (!numericPart.isEmpty()) {
-                    try {
-                        prdId = Long.parseLong(numericPart);
-                    } catch (NumberFormatException e) {
-                        // 숫자로 변환 실패 시 해시코드 사용
-                        prdId = (long) Math.abs(productName.hashCode() + System.currentTimeMillis() % 1000000000);
-                    }
-                } else {
-                    prdId = (long) Math.abs(productName.hashCode() + System.currentTimeMillis() % 1000000000);
-                }
-            } else {
-                prdId = (long) Math.abs(productName.hashCode() + System.currentTimeMillis() % 1000000000);
-            }
+            String companyName = getTextFromNode(item, "ENTRPS");
+            String registrationNo = getTextFromNode(item, "STTEMNT_NO");
             
             ProductDto dto = new ProductDto();
-            dto.setPrdId(prdId);
+            // prd_id는 설정하지 않음 (DB에서 자동 생성)
             dto.setProductName(productName);
             dto.setCompanyName(companyName);
-            dto.setRegistrationNo(reportNo);
+            dto.setRegistrationNo(registrationNo); // 품목제조신고번호 저장
             
             // 추가 정보 매핑
-            dto.setExpirationPeriod(getTextFromNode(item, "DISTB_PD")); // 유통기한
-            dto.setMainFunction(getTextFromNode(item, "MAIN_FNCTN")); // 주요기능
-            dto.setIntakeHint(getTextFromNode(item, "INTAKE_HINT1")); // 섭취시 주의사항
-            dto.setPreservation(getTextFromNode(item, "PRSRV_PD")); // 보관방법
-            dto.setSrvUse(getTextFromNode(item, "SRV_USE")); // 섭취방법
-            dto.setBaseStandard(getTextFromNode(item, "BASE_STANDARD")); // 기준규격
+            dto.setExpirationPeriod(getTextFromNode(item, "DISTB_PD"));
+            dto.setMainFunction(getTextFromNode(item, "MAIN_FNCTN"));
+            dto.setIntakeHint(getTextFromNode(item, "INTAKE_HINT1"));
+            dto.setPreservation(getTextFromNode(item, "PRSRV_PD"));
+            dto.setSrvUse(getTextFromNode(item, "SRV_USE"));
+            dto.setBaseStandard(getTextFromNode(item, "BASE_STANDARD"));
             
-            log.info("파싱된 제품: {}", productName);
             return dto;
         } catch (Exception e) {
             log.error("제품 데이터 파싱 중 오류: {}", e.getMessage(), e);
@@ -299,26 +274,42 @@ public class ProductService {
     }
 
     // 제품 정보를 DB에 저장
-    private void saveProductToDb(ProductDto productDto) {
+    private Product saveProductToDb(ProductDto productDto) {
         try {
-            // ID가 0인 경우 처리
-            if (productDto.getPrdId() == 0) {
-                productDto.setPrdId(generateTempId(productDto.getProductName()));
+            // 신고번호로 기존 제품 조회
+            Product existingProduct = null;
+            if (productDto.getRegistrationNo() != null && !productDto.getRegistrationNo().isEmpty()) {
+                existingProduct = productMapper.getProductByRegistrationNo(productDto.getRegistrationNo());
             }
             
-            // 이미 존재하는지 확인
-            Product existingProduct = productMapper.getProductById(productDto.getPrdId());
+            // 신고번호가 없거나 신고번호로 제품을 찾지 못한 경우 제품명과 제조사로 검색
+            if (existingProduct == null) {
+                List<Product> products = productMapper.searchProducts(productDto.getProductName());
+                for (Product p : products) {
+                    if (p.getProductName().equals(productDto.getProductName()) &&
+                        p.getCompanyName().equals(productDto.getCompanyName())) {
+                        existingProduct = p;
+                        break;
+                    }
+                }
+            }
             
             if (existingProduct == null) {
-                // 새 제품 저장
+                // 새 제품 저장 - prd_id는 DB에서 자동 생성
                 Product product = convertToEntity(productDto);
                 productMapper.insertProduct(product);
                 log.info("새 제품 DB에 저장: {}", productDto.getProductName());
+                
+                // product 객체에 자동 생성된 ID가 설정됨
+                return product;
             } else {
-                // 기존 제품 갱신
+                // 기존 제품 정보 업데이트 (필요한 경우)
                 Product product = convertToEntity(productDto);
+                product.setPrdId(existingProduct.getPrdId()); // 기존 ID 유지
                 productMapper.updateProduct(product);
                 log.info("기존 제품 정보 업데이트: {}", productDto.getProductName());
+                
+                return existingProduct;
             }
         } catch (Exception e) {
             log.error("제품 저장 중 오류: {}", e.getMessage(), e);
@@ -326,9 +317,14 @@ public class ProductService {
         }
     }
 
-    // 임시 ID 생성
-    private Long generateTempId(String key) {
-        return Math.abs((key.hashCode() + System.currentTimeMillis()) % 1000000000L);
+     //즐겨찾기 시 제품을 저장하고 반환하는 메서드
+    public Product saveProductForFavorite(FavoriteDto favoriteDto) {
+        ProductDto productDto = new ProductDto();
+        productDto.setProductName(favoriteDto.getProductName());
+        productDto.setCompanyName(favoriteDto.getCompanyName());
+        // 기타 필요한 정보 설정
+        
+        return saveProductToDb(productDto); // 내부적으로 private 메서드 호출
     }
 
     // Entity -> DTO 변환

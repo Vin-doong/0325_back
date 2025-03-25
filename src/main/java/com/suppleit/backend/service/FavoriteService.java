@@ -1,6 +1,7 @@
 package com.suppleit.backend.service;
 
 import com.suppleit.backend.dto.FavoriteDto;
+import com.suppleit.backend.dto.ProductDto;
 import com.suppleit.backend.mapper.FavoriteMapper;
 import com.suppleit.backend.mapper.MemberMapper;
 import com.suppleit.backend.mapper.ProductMapper;
@@ -23,6 +24,7 @@ public class FavoriteService {
     private final FavoriteMapper favoriteMapper;
     private final MemberMapper memberMapper;
     private final ProductMapper productMapper;
+    private final ProductService productService;
 
     // 사용자의 즐겨찾기 목록 조회
     public List<FavoriteDto> getUserFavorites(String email) {
@@ -46,22 +48,29 @@ public class FavoriteService {
             throw new IllegalArgumentException("사용자를 찾을 수 없습니다: " + email);
         }
         
-        // 제품 정보 확인 및 저장
-        Product product = productMapper.getProductById(favoriteDto.getPrdId());
+        Long prdId = favoriteDto.getPrdId();
+        Product product = null;
+        
+        // 제품 ID로 제품 조회
+        if (prdId != null) {
+            product = productMapper.getProductById(prdId);
+        }
+        
+        // 제품이 존재하지 않으면 새로 저장
         if (product == null) {
-            // 제품이 존재하지 않으면 새로 저장
-            product = new Product();
-            product.setPrdId(favoriteDto.getPrdId());
-            product.setProductName(favoriteDto.getProductName());
-            product.setCompanyName(favoriteDto.getCompanyName());
+            ProductDto productDto = new ProductDto();
+            productDto.setProductName(favoriteDto.getProductName());
+            productDto.setCompanyName(favoriteDto.getCompanyName());
+            // 기타 정보 설정
             
-            productMapper.insertProduct(product);
-            log.info("새 제품 저장: {}", favoriteDto.getProductName());
+            // 제품 저장 후 생성된 ID 가져오기
+            product = productService.saveProductForFavorite(favoriteDto);
+            prdId = product.getPrdId();
         }
         
         // 이미 즐겨찾기한 제품인지 확인
         Favorite existingFavorite = favoriteMapper.getFavoriteByMemberAndProduct(
-                member.getMemberId(), favoriteDto.getPrdId());
+                member.getMemberId(), prdId);
         
         if (existingFavorite != null) {
             log.info("이미 즐겨찾기한 제품입니다: {}", favoriteDto.getProductName());
@@ -71,7 +80,7 @@ public class FavoriteService {
         // 즐겨찾기 추가
         Favorite favorite = new Favorite();
         favorite.setMemberId(member.getMemberId());
-        favorite.setPrdId(favoriteDto.getPrdId());
+        favorite.setPrdId(prdId);
         
         favoriteMapper.insertFavorite(favorite);
         log.info("즐겨찾기 추가 완료: {} - {}", email, favoriteDto.getProductName());
