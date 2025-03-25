@@ -148,14 +148,13 @@ public class ProductService {
             log.debug("인코딩된 키워드: {}", encodedKeyword);
             
             // API URL 구성
-            URI uri = UriComponentsBuilder.fromUriString(apiUrl)
-                .queryParam("serviceKey", apiKey)  // 인코딩된 키를 그대로 사용
-                .queryParam("Prduct", encodedKeyword)
-                .queryParam("pageNo", 1)
-                .queryParam("numOfRows", 10)
-                .queryParam("type", "json")
-                .build(false)
-                .toUri();
+            String url = apiUrl + 
+                "?serviceKey=" + apiKey + 
+                "&Prduct=" + encodedKeyword + 
+                "&pageNo=1" + 
+                "&numOfRows=10" + 
+                "&type=json";
+            URI uri = new URI(url);
 
             log.debug("실제 요청 URL: {}", uri);
             
